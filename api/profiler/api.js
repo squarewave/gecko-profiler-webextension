@@ -1,9 +1,14 @@
 const { utils: Cu, classes: Cc, interfaces: Ci } = Components;
 
 Cu.import("resource://gre/modules/Services.jsm");
+Cu.import("resource://gre/modules/ExtensionUtils.jsm");
 
 const kAsyncStackPrefName = "javascript.options.asyncstack";
 let gAsyncStacksWereEnabled = false;
+
+const {
+  SingletonEventManager
+} = ExtensionUtils;
 
 function getArch() {
   let abi = Cc["@mozilla.org/xre/app-info;1"].getService(Ci.nsIXULRuntime).XPCOMABI;
@@ -53,14 +58,6 @@ async function pauseProfiler() {
 async function resumeProfiler() {
   profiler().ResumeSampling();
   return Promise.resolve();
-}
-
-function addIsRunningObserver(fun) {
-  isRunningObserver.addObserver(fun);
-}
-
-function removeIsRunningObserver(fun) {
-  isRunningObserver.removeObserver(fun);
 }
 
 function isRunning() {
@@ -168,6 +165,13 @@ const isRunningObserver = {
 
 class API extends ExtensionAPI {
   getAPI(context) {
+    const onRunningChanged = new SingletonEventManager(context, 'profiler.onRunningChanged', fire => {
+      isRunningObserver.addObserver(fire.async);
+      return () => {
+        isRunningObserver.removeObserver(fire.async);
+      }
+    });
+
     return {
       profiler: {
         start: startProfiler,
@@ -175,10 +179,9 @@ class API extends ExtensionAPI {
         pause: pauseProfiler,
         resume: resumeProfiler,
         isRunning: isRunning,
-        addIsRunningObserver: addIsRunningObserver,
-        removeIsRunningObserver: removeIsRunningObserver,
         getProfile: getProfile,
         getSharedLibraryInformation: getSharedLibraryInformation,
+        onRunningChanged: onRunningChanged.api()
       }
     };
   }

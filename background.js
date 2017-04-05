@@ -1,13 +1,3 @@
-const { browserAction } = browser;
-
-function doWork(workerFn, dataCallback) {
-  const blob = new Blob([`(${workerFn.toString()})();`], {
-    type: 'application/javascript'
-  });
-  const worker = new Worker(URL.createObjectURL(blob));
-  worker.onmessage = (e) => dataCallback(e.data);
-}
-
 function adjustState(newState) {
   Object.assign(window.profilerState, newState);
   browser.storage.local.set({profilerState: window.profilerState});
@@ -76,9 +66,8 @@ async function captureProfile() {
     await browser.tabs.update(tab.id, { url: `data:text/html,${e}` });
   }
 
-  const isRunning = await browser.profiler.isRunning();
   try {
-    await profiler.resume();
+    await browser.profiler.resume();
   } catch (e) {
     console.error(e);
   }
@@ -104,6 +93,13 @@ async function restartProfiler() {
   window.profilerState = (await browser.storage.local.get('profilerState')).profilerState;
 
   adjustState({ isRunning: false });
+  browser.profiler.onRunningChanged.addListener(isRunning => {
+    adjustState({ isRunning });
+    browser.browserAction.setIcon({ path: `icons/toolbar_${isRunning ? 'on' : 'off' }.png` });
+    for (const popup of browser.extension.getViews({ type: 'popup' })) {
+      popup.renderState(browser.profilerState);
+    }
+  });
 
   if (!window.profilerState) {
     window.profilerState = {};
