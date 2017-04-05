@@ -1,0 +1,33 @@
+{
+  "manifest_version": 2,
+  "name": "Gecko Profiler",
+  "version": "0.0",
+  "description": "Gecko Profiler WebExtension.",
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "browser_action": {
+    "default_popup": "popup.html",
+    "default_title": "Gecko Profiler",
+    "default_icon": "icons/toolbar_off.png"
+  },
+  "content_scripts": [
+    {
+      "all_frames": false,
+      "js": ["content.js"],
+      "matches": ["https://perf-html.io/*"],
+      "run_at": "document_start"
+    }
+  ],
+  "applications": {
+    "gecko": {
+      "id": "geckoprofiler@mozilla.com",
+      "strict_min_version": "52.0"
+    }
+  },
+  "permissions": [
+    "experiments.profiler",
+    "storage",
+    "https://perf-html.io/*"
+  ]
+}

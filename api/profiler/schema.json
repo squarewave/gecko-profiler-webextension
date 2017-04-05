@@ -1,0 +1,115 @@
+[
+  {
+   "namespace": "profiler",
+   "description": "Exposes the built-in Gecko profiler",
+
+  "permissions": ["experiments.profiler"],
+  "functions": [
+    {
+     "name": "start",
+     "type": "function",
+     "description": "",
+     "async": true,
+     "parameters": [
+      {
+        "type": "number",
+        "name": "entries"
+      },
+      {
+        "type": "number",
+        "name": "interval"
+      },
+      {
+        "type": "array",
+        "name": "features",
+        "items": {
+          "type": "string"
+        }
+      },
+      {
+        "type": "array",
+        "name": "threads",
+        "items": {
+          "type": "string"
+        }
+      }
+    ]
+    },
+    {
+      "name": "stop",
+      "type": "function",
+      "description": "",
+      "async": true,
+      "parameters": []
+    },
+    {
+      "name": "pause",
+      "type": "function",
+      "description": "",
+      "async": true,
+      "parameters": []
+    },
+    {
+      "name": "resume",
+      "type": "function",
+      "description": "",
+      "async": true,
+      "parameters": []
+    },
+    {
+      "name": "isRunning",
+      "type": "function",
+      "description": "",
+      "async": "callback",
+      "parameters": [
+        {
+          "type": "function",
+          "name": "callback",
+          "parameters": [
+            {
+              "name": "val",
+              "type": "bool"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "addIsRunningObserver",
+      "type": "function",
+      "description": "",
+      "async": false,
+      "parameters": []
+    },
+    {
+      "name": "removeIsRunningObserver",
+      "type": "function",
+      "description": "",
+      "async": false,
+      "parameters": []
+    },
+    {
+      "name": "getProfile",
+      "type": "function",
+      "description": "",
+      "async": "callback",
+      "parameters": [
+        {
+          "type": "function",
+          "name": "callback",
+          "parameters": []
+        }
+      ]
+    },
+    {
+      "name": "getSharedLibraryInformation",
+      "type": "function",
+      "description": "",
+      "async": "callback",
+      "parameters": []
+    }
+   ]
+  }
+]
+
+
