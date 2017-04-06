@@ -12,7 +12,6 @@ html {
 
 body {
   margin: 0;
-  width: 330px;
 }
 
 .status-display {
@@ -138,7 +137,7 @@ body {
   position: absolute;
   width: 16px;
   height: 16px;
-  background: url(icons/capture-profile-icon.svg);
+  background: url(img/capture-profile-icon.svg);
   top: 6px;
   left: 10px;
 }

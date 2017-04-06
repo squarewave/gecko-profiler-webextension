@@ -2,9 +2,14 @@ const { utils: Cu, classes: Cc, interfaces: Ci } = Components;
 
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/ExtensionUtils.jsm");
+Cu.import("resource://gre/modules/Timer.jsm");
+Cu.import("resource://extension-profiler-api/Worker.jsm");
 const { OS } = Cu.import("resource://gre/modules/osfile.jsm", {});
-Cu.import(`resource://extension-profiler-api/Worker.jsm`);
+const { gDevTools } = Cu.import("resource://devtools/client/framework/gDevTools.jsm", {});
+const { loader } = Cu.import("resource://devtools/shared/Loader.jsm", {});
 Cu.importGlobalProperties(['fetch', 'Blob', 'TextDecoder', 'TextEncoder', 'URL']);
+
+loader.lazyRequireGetter(this, "EventEmitter", "devtools/shared/event-emitter");
 
 const kAsyncStackPrefName = "javascript.options.asyncstack";
 let gAsyncStacksWereEnabled = false;
@@ -13,20 +18,8 @@ const {
   SingletonEventManager
 } = ExtensionUtils;
 
-function doWork(data, workerFn) {
-  const blob = new Blob([`
-    onmessage = e => {
-      try {
-        const [result, transfer] = (${workerFn.toString()})(e.data);
-        postMessage({ result }, transfer);
-      } catch (error) {
-        postMessage({ error });
-      }
-    };
-    `], {
-    type: 'application/javascript'
-  });
-  const worker = new Worker(URL.createObjectURL(blob));
+function parseSym(data) {
+  const worker =  new Worker('resource://extension-profiler-api/parse-syms-worker.js');
   worker.postMessage(data);
   return new Promise((resolve, reject) => {
     worker.onmessage = (e) => {
@@ -75,7 +68,7 @@ async function startProfiler(entries, interval, features, threads) {
   });
 }
 
-async function stopProfiler() {
+async function stopProfiler(remotePanelId) {
   await new Promise((resolve, reject) => {
     Services.prefs.setBoolPref(kAsyncStackPrefName, gAsyncStacksWereEnabled);
     profiler().StopProfiler();
@@ -83,21 +76,21 @@ async function stopProfiler() {
   });
 }
 
-async function pauseProfiler() {
+async function pauseProfiler(remotePanelId) {
   profiler().PauseSampling();
   return Promise.resolve();
 }
 
-async function resumeProfiler() {
+async function resumeProfiler(remotePanelId) {
   profiler().ResumeSampling();
   return Promise.resolve();
 }
 
-function isRunning() {
+function isRunning(remotePanelId) {
   return Promise.resolve(profiler().IsActive());
 }
 
-function getProfile() {
+function getProfile(remotePanelId) {
   if (!profiler().IsActive()) {
     return Promise.reject(new Error("The profiler is stopped. " +
       "You need to start the profiler before you can capture a profile."));
@@ -221,8 +214,7 @@ function getSymbolsFromExistingDumpInObjDir(path, debugName, breakpadId) {
 
 const symbolCache = new Map();
 
-async function primeSymbolStore() {
-  const libs = await getSharedLibraryInformation();
+async function primeSymbolStore(libs) {
   const platform = getPlatform();
 
   for (const { debugName, breakpadId, path, arch } of libs) {
@@ -230,96 +222,6 @@ async function primeSymbolStore() {
       debugName, breakpadId, path, platform, arch,
     });
   }
-}
-
-function parseSym(text) {
-  function convertStringArrayToUint8BufferWithIndex(array, approximateLength) {
-    const index = new Uint32Array(array.length + 1);
-
-    const textEncoder = new TextEncoder();
-    let buffer = new Uint8Array(approximateLength);
-    let pos = 0;
-
-    for (let i = 0; i < array.length; i++) {
-      const encodedString = textEncoder.encode(array[i]);
-      while (pos + encodedString.length > buffer.length) {
-        let newBuffer = new Uint8Array(buffer.length << 1);
-        newBuffer.set(buffer);
-        buffer = newBuffer;
-      }
-      buffer.set(encodedString, pos);
-      index[i] = pos;
-      pos += encodedString.length;
-    }
-    index[array.length] = pos;
-
-    return { index, buffer };
-  }
-
-  function convertSymsMapToExpectedSymFormat(syms, approximateSymLength) {
-    const addresses = Array.from(syms.keys());
-    addresses.sort((a, b) => a - b);
-
-    const symsArray = addresses.map(addr => syms.get(addr));
-    const { index, buffer } =
-      convertStringArrayToUint8BufferWithIndex(symsArray, approximateSymLength);
-
-    const resultAddresses = new Uint32Array(addresses);
-    return [[resultAddresses, index, buffer], [resultAddresses.buffer, index.buffer, buffer.buffer]];
-  }
-
-  function convertToText(text) {
-    if (typeof text === 'string') {
-      return text;
-    }
-    if (text instanceof Uint8Array) {
-      let decoder = new TextDecoder("utf-8");
-      return decoder.decode(text);
-    }
-    if (text instanceof Blob) {
-      let fileReader = new FileReaderSync();
-      return fileReader.readAsText(text, "utf-8");
-    }
-    throw new Error("invalid input");
-  }
-
-  text = convertToText(text);
-
-  const syms = new Map();
-
-  let approximateSymLength = 0;
-
-  function addSym(address, symStart, symEnd) {
-    const sym = text.substring(symStart, symEnd).trimRight();
-    approximateSymLength += sym.length;
-    syms.set(address, sym);
-  }
-
-  let nextPublic = text.indexOf('\nPUBLIC ');
-  let nextFunc = text.indexOf('\nFUNC ');
-  while (nextPublic != -1 || nextFunc != -1) {
-    if (nextPublic != -1 && (nextFunc == -1 || nextPublic < nextFunc)) {
-      // Parse PUBLIC line: PUBLIC <address> <stack_param_size> <name>
-      const addrStart = nextPublic + '\nPUBLIC '.length;
-      const addrEnd = text.indexOf(' ', addrStart);
-      const address = parseInt(text.substring(addrStart, addrEnd), 16);
-      const symStart = text.indexOf(' ', addrEnd + 1) + 1;
-      const symEnd = text.indexOf('\n', symStart);
-      addSym(address, symStart, symEnd);
-      nextPublic = text.indexOf('\nPUBLIC ', symEnd);
-    } else {
-      // Parse FUNC line: FUNC <address> <size> <stack_param_size> <name>
-      const addrStart = nextFunc + '\nFUNC '.length;
-      const addrEnd = text.indexOf(' ', addrStart);
-      const address = parseInt(text.substring(addrStart, addrEnd), 16);
-      const symStart = text.indexOf(' ', text.indexOf(' ', addrEnd + 1) + 1) + 1;
-      const symEnd = text.indexOf('\n', symStart);
-      addSym(address, symStart, symEnd);
-      nextFunc = text.indexOf('\nFUNC ', symEnd);
-    }
-  }
-
-  return convertSymsMapToExpectedSymFormat(syms, approximateSymLength);
 }
 
 async function getSymbols(debugName, breakpadId) {
@@ -355,7 +257,7 @@ async function getSymbols(debugName, breakpadId) {
   if (haveAbsolutePath) {
     try {
       const symbolDump = await getSymbolsFromExistingDumpInObjDir(path, debugName, breakpadId);
-      return await doWork(symbolDump, parseSym);
+      return await parseSym(symbolDump);
     } catch (e) {
       console.warn(e);
     }
@@ -365,7 +267,7 @@ async function getSymbols(debugName, breakpadId) {
   const symbolDump = await getSymbolDumpFromSymbolServer(debugName, breakpadId);
 
   if (symbolDump) {
-    return await doWork(symbolDump, parseSym);
+    return await parseSym(symbolDump);
   }
 
   // if (!haveAbsolutePath) {
@@ -395,6 +297,185 @@ async function getSymbols(debugName, breakpadId) {
   //     parseSym(symbolDump)
   //   );
   // }
+}
+
+function listClientTabs(client) {
+  return new Promise((resolve, reject) => {
+    client.listTabs(response => {
+      if (!response.error) {
+        resolve(response);
+      } else {
+        reject(response.error + ': ' + response.message);
+      }
+    });
+  });
+}
+
+async function profilerForClient(client) {
+  const profilerActor = (await listClientTabs(client)).tabs[0].profilerActor;
+
+  function request(msgName, args = {}) {
+    return new Promise((resolve, reject) => {
+      const msg = Object.assign({ to: profilerActor, type: msgName }, args);
+      // console.log('request:', msg);
+      client.request(msg, response => {
+        // console.log(msgName + ' response:', response);
+        if (!response.error) {
+          resolve(response);
+        } else {
+          reject(response.error + ': ' + response.message);
+        }
+      });
+    });
+  }
+
+  function startProfiler(entries, interval, features, threads) {
+    // Requesting stackwalk seems to crash non-nightly Firefox for Android builds...
+    const featuresWithoutStackWalk = features.filter(f => f !== 'stackwalk');
+    return request('startProfiler', {
+      entries,
+      interval,
+      features: featuresWithoutStackWalk,
+      threadFilters: threads
+    });
+  }
+
+  function stopProfiler() {
+    return request('stopProfiler');
+  }
+
+  function pauseProfiler() {
+    return Promise.reject(new Error('pausing and resuming is not implemented by the ProfilerActor'));
+  }
+
+  function resumeProfiler() {
+    return Promise.reject(new Error('pausing and resuming is not implemented by the ProfilerActor'));
+  }
+
+  async function isRunning() {
+    return (await request('isActive')).isActive;
+  }
+
+  let randomLibs = null;
+
+  async function getProfile() {
+    const profile = (await request('getProfile')).profile;
+    randomLibs = JSON.parse(JSON.stringify(profile.libs));
+    return profile;
+  }
+
+  async function getSharedLibraryInformation() {
+    try {
+      // This is broken at the moment, see bug 1350503.
+      // return (await request('sharedLibraries')).sharedLibraries;
+    } catch (e) { }
+
+    // If sharedLibraries does not exist, then we're connected to a
+    // pre-bug 1329111 build and need to massage the data a little so that it
+    // has the shape that we need.
+
+    let sli;
+    try {
+      sli = (await request('getSharedLibraryInformation')).sharedLibraryInformation;
+    } catch (e) {
+      if (randomLibs) {
+        return randomLibs;
+      }
+      return (await getProfile()).libs;
+    }
+    let json = JSON.parse(sli);
+    return json.map(lib => {
+      let debugName, breakpadId;
+      if ('breakpadId' in lib) {
+        debugName = lib.name.substr(lib.name.lastIndexOf("/") + 1);
+        breakpadId = lib.breakpadId;
+      } else {
+        debugName = lib.pdbName;
+        let pdbSig = lib.pdbSignature.replace(/[{}-]/g, "").toUpperCase();
+        breakpadId = pdbSig + lib.pdbAge;
+      }
+      // Before bug 1329111, the path was in the 'name' property on macOS and
+      // Linux, and unobtainable on Windows.
+      const path = lib.path || lib.name;
+      const arch = lib.arch || 'arm';
+      return Object.assign({}, lib, { debugName, breakpadId, path, arch });
+    });
+  }
+
+  return {
+    start: startProfiler,
+    stop: stopProfiler,
+    pause: pauseProfiler,
+    resume: resumeProfiler,
+    isRunning: isRunning,
+    getProfile: getProfile,
+    getSharedLibraryInformation: getSharedLibraryInformation,
+    platform: {
+      platform: 'Android',
+      arch: 'arm'
+    },
+  };
+}
+
+/**
+ * This is the add-on's panel, wrapping the tool's contents.
+ *
+ * @param nsIDOMWindow iframeWindow
+ *        The iframe window containing the tool's markup and logic.
+ * @param Toolbox toolbox
+ *        The developer tools toolbox, containing all tools.
+ * @param function messageCallback
+ *        The callback for when the devtools panel posts a message up.
+ */
+class ProfilerDevtoolsPanel {
+  constructor(iframeWindow, toolbox, messageCallback) {
+    this.panelWin = iframeWindow;
+    this.toolbox = toolbox;
+    this.messageCallback = messageCallback;
+    EventEmitter.decorate(this);
+  }
+
+  /**
+   * Open is effectively an asynchronous constructor.
+   * Called when the user select the tool tab.
+   *
+   * @return object
+   *         A promise that is resolved when the tool completes opening.
+   */
+  async open() {
+    this.onReady();
+
+    this.isReady = true;
+    this.emit("ready");
+    return this;
+  }
+
+  /**
+   * Called when the user closes the toolbox or disables the add-on.
+   *
+   * @return object
+   *         A promise that is resolved when the tool completes closing.
+   */
+  async destroy() {
+    this.isReady = false;
+    this.emit("destroyed");
+  }
+
+  sendMessage(message) {
+    this.panelWin.postMessage(message, '*');
+  }
+
+  onReady() {
+    this.panelWin.postMessage({ type: 'ParentReady' }, '*');
+
+    this.panelWin.addEventListener('message', (event) => {
+      if (event.source != this.panelWin) {
+        return;
+      }
+
+      this.messageCallback(event.data);
+    });
+  }
 }
 
 const isRunningObserver = {
@@ -449,26 +530,165 @@ const isRunningObserver = {
   }
 };
 
+const toolDefinitionMap = new Map();
+
+let panelId = 1;
+const panelMap = new Map();
+
 class API extends ExtensionAPI {
+
+  onShutdown(reason) {
+    const { extension } = this;
+
+    // Destroy the registered devtools_page definition on extension shutdown.
+    if (toolDefinitionMap.has(extension)) {
+      gDevTools.unregisterTool(toolDefinitionMap.get(extension));
+      toolDefinitionMap.delete(extension);
+    }
+  }
+
   getAPI(context) {
-    const onRunningChanged = new SingletonEventManager(context, 'profiler.onRunningChanged', fire => {
+    const { extension } = this;
+
+    const onRunningChanged = new SingletonEventManager(context,
+                                                       'profiler.onRunningChanged',
+                                                       fire => {
       isRunningObserver.addObserver(fire.async);
       return () => {
         isRunningObserver.removeObserver(fire.async);
       }
     });
 
+    const onDevtoolsPanelMessage = new SingletonEventManager(context,
+                                                         'profiler.onDevtoolsPanelMessage',
+                                                         fire => {
+      const listener = (messageName, {panelID, data}) => {
+        fire.async(data, panelID);
+      };
+
+      extension.on('DevtoolsPanelMessage', listener);
+
+      return () => {
+        extension.off('DevtoolsPanelMessage', listener);
+      };
+    });
+
+    const baseToolDefinition = {
+
+      // The position of the tool's tab within the toolbox
+      ordinal: 99,
+      // Main keybinding key (used as a keyboard shortcut).
+      key: "",
+      // Main keybinding modifiers.
+      modifiers: "",
+
+      // The url of the icon, displayed in the Toolbox.
+      invertIconForLightTheme: false,
+
+      // If the target is not supported, the toolbox will hide the tab.
+      // Targets can be local or remote (used in remote debugging).
+      isTargetSupported: function(target) {
+        // Don't show the button on local tabs, the add-on's toolbar button is a
+        // better interface than a distracting devtools tab.
+        return true; //!target.isLocalTab;
+      },
+
+      // This function is called when the user select the tool tab.
+      // It is called only once the tool definition's URL is loaded.
+      async build(iframeWindow, toolbox) {
+        const profiler = await profilerForClient(toolbox.target.client);
+        const id = panelId++;
+
+        const panel = new ProfilerDevtoolsPanel(iframeWindow, toolbox, data => {
+          extension.emit('DevtoolsPanelMessage', { panelID: id, data });
+        });
+
+        panelMap.set(id, { profiler, panel });
+        panel.on('destroyed', () => {
+          panelMap.delete(id);
+        });
+
+        return panel.open();
+      }
+    };
+
+    const profiler = {
+      start: startProfiler,
+      stop: stopProfiler,
+      pause: pauseProfiler,
+      resume: resumeProfiler,
+      isRunning: isRunning,
+      getProfile: getProfile,
+      getSharedLibraryInformation: getSharedLibraryInformation
+    };
+
+    function getProfilerBase(remotePanelId) {
+      if (remotePanelId !== null) {
+        const obj = panelMap.get(remotePanelId);
+        if (obj) {
+          return obj.profiler;
+        } else {
+          throw new Error('Panel is no longer active.')
+        }
+      } else {
+        return profiler;
+      }
+    }
+
     return {
       profiler: {
-        start: startProfiler,
-        stop: stopProfiler,
-        pause: pauseProfiler,
-        resume: resumeProfiler,
-        isRunning: isRunning,
-        getProfile: getProfile,
-        primeSymbolStore: primeSymbolStore,
+        async start(entries, interval, features, threads, panelID = null) {
+          await getProfilerBase(panelID).start(entries, interval, features, threads)
+        },
+        async stop(panelID = null) {
+          await getProfilerBase(panelID).stop();
+        },
+
+        async pause(panelID = null) {
+          await getProfilerBase(panelID).pause();
+        },
+
+        async resume(panelID = null) {
+          await getProfilerBase(panelID).resume();
+        },
+
+        async isRunning(panelID = null) {
+          return await getProfilerBase(panelID).isRunning();
+        },
+
+        async getProfile(panelID = null) {
+          return await getProfilerBase(panelID).getProfile();
+        },
+
+        async primeSymbolStore(panelID = null) {
+          const libs = await getProfilerBase(panelID).getSharedLibraryInformation();
+          return await primeSymbolStore(libs);
+        },
+
         getSymbols: getSymbols,
-        onRunningChanged: onRunningChanged.api()
+
+        onRunningChanged: onRunningChanged.api(),
+
+        onDevtoolsPanelMessage: onDevtoolsPanelMessage.api(),
+
+        sendDevtoolsPanelMessage(panelID, message) {
+          const obj = panelMap.get(panelID);
+          if (obj) {
+            obj.panel.sendMessage(message);
+          } else {
+            throw new Error('Panel does not exist');
+          }
+        },
+
+        registerDevtoolsPanel(id, options) {
+          options.id = id;
+          options.icon = extension.baseURI.resolve(options.icon);
+          options.url = extension.baseURI.resolve(options.url);
+
+          const toolDefinition = Object.assign({}, baseToolDefinition, options, { id });
+          gDevTools.registerTool(toolDefinition);
+          toolDefinitionMap.set(extension, toolDefinition);
+        }
       }
     };
   }

@@ -32,6 +32,11 @@
           "items": {
             "type": "string"
           }
+        },
+        {
+          "type": "number",
+          "name": "panelID",
+          "optional": true
         }
       ]
       },
@@ -40,28 +45,52 @@
         "type": "function",
         "description": "",
         "async": true,
-        "parameters": []
+        "parameters": [
+          {
+            "type": "number",
+            "name": "panelID",
+            "optional": true
+          }
+        ]
       },
       {
         "name": "pause",
         "type": "function",
         "description": "",
         "async": true,
-        "parameters": []
+        "parameters": [
+          {
+            "type": "number",
+            "name": "panelID",
+            "optional": true
+          }
+        ]
       },
       {
         "name": "resume",
         "type": "function",
         "description": "",
         "async": true,
-        "parameters": []
+        "parameters": [
+          {
+            "type": "number",
+            "name": "panelID",
+            "optional": true
+          }
+        ]
       },
       {
         "name": "isRunning",
         "type": "function",
         "description": "",
         "async": "callback",
-        "parameters": []
+        "parameters": [
+          {
+            "type": "number",
+            "name": "panelID",
+            "optional": true
+          }
+        ]
       },
       {
         "name": "getProfile",
@@ -70,9 +99,9 @@
         "async": "callback",
         "parameters": [
           {
-            "type": "function",
-            "name": "callback",
-            "parameters": []
+            "type": "number",
+            "name": "panelID",
+            "optional": true
           }
         ]
       },
@@ -81,7 +110,13 @@
         "type": "function",
         "description": "",
         "async": "callback",
-        "parameters": []
+        "parameters": [
+          {
+            "type": "number",
+            "name": "panelID",
+            "optional": true
+          }
+        ]
       },
       {
         "name": "getSymbols",
@@ -98,6 +133,56 @@
             "name": "breakpadId"
           }
         ]
+      },
+      {
+        "name": "registerDevtoolsPanel",
+        "type": "function",
+        "description": "",
+        "async": "callback",
+        "parameters": [
+          {
+            "type": "string",
+            "name": "id"
+          },
+          {
+            "type": "object",
+            "name": "options",
+            "properties": {
+              "icon": {
+                "type": "string",
+                "description": ""
+              },
+              "url": {
+                "type": "string",
+                "description": ""
+              },
+              "label": {
+                "type": "string",
+                "description": ""
+              },
+              "tooltip": {
+                "type": "string",
+                "description": ""
+              }
+            }
+          }
+        ]
+      },
+      {
+        "name": "sendDevtoolsPanelMessage",
+        "type": "function",
+        "description": "",
+        "async": "callback",
+        "parameters": [
+          {
+            "type": "number",
+            "name": "panelID"
+          },
+          {
+            "type": "any",
+            "name": "message"
+          }
+        ]
       }
     ],
     "events": [
@@ -109,6 +194,28 @@
           {
             "name": "isRunning",
             "type": "boolean",
+            "description": ""
+          }
+        ]
+      },
+      {
+        "name": "onDevtoolsPanelMessage",
+        "type": "function",
+        "description": "",
+        "parameters": [
+          {
+            "name": "message",
+            "type": "any",
+            "description": ""
+          },
+          {
+            "name": "panelID",
+            "type": "number",
+            "description": ""
+          },
+          {
+            "name": "sendResponse",
+            "type": "function",
             "description": ""
           }
         ]
