@@ -17,13 +17,32 @@ async function startProfiler() {
                                threads);
 }
 
-async function primeSymbolStore() {
-  const sli = await browser.profiler.getSharedLibraryInformation();
-  return await symbolStore.prime(sli);
-}
-
 function makeProfileAvailableToTab(profile, port) {
   port.postMessage({ type: 'ProfilerConnectToPage', payload: profile });
+
+  port.onMessage.addListener(async message => {
+    if (message.type === 'ProfilerGetSymbolTable') {
+      const { debugName, breakpadId } = message;
+      console.log(`requested ${debugName} ${breakpadId}`)
+      try {
+        const [ addresses, index, buffer ] = await browser.profiler.getSymbols(debugName, breakpadId);
+
+        port.postMessage({
+          type: 'ProfilerGetSymbolTableReply',
+          status: 'success',
+          result: [addresses, index, buffer],
+          debugName, breakpadId
+        });
+      } catch (e) {
+        port.postMessage({
+          type: 'ProfilerGetSymbolTableReply',
+          status: 'error',
+          error: `${e}`,
+          debugName, breakpadId
+        });
+      }
+    }
+  });
 }
 
 async function createAndWaitForTab(url) {
@@ -54,7 +73,7 @@ async function captureProfile() {
 
   const profilePromise = browser.profiler.getProfile().catch(e => (console.error(e), {}));
   const tabOpenPromise = createAndWaitForTab(window.profilerState.reportUrl);
-  const symbolStorePrimingPromise = Promise.resolve(true); //primeSymbolStore();
+  const symbolStorePrimingPromise = browser.profiler.primeSymbolStore();
 
   try {
     const [profile, { port }] = await Promise.all([profilePromise, tabOpenPromise, symbolStorePrimingPromise]);
@@ -63,7 +82,8 @@ async function captureProfile() {
     console.log("error getting profile:");
     console.error(e);
     const { tab } = await tabOpenPromise;
-    await browser.tabs.update(tab.id, { url: `data:text/html,${e}` });
+    // TODO data URL doesn't seem to be working. Permissions issue?
+    // await browser.tabs.update(tab.id, { url: `data:text/html,${encodeURIComponent(e.toString)}` });
   }
 
   try {
@@ -92,12 +112,11 @@ async function restartProfiler() {
 (async () => {
   window.profilerState = (await browser.storage.local.get('profilerState')).profilerState;
 
-  adjustState({ isRunning: false });
   browser.profiler.onRunningChanged.addListener(isRunning => {
     adjustState({ isRunning });
     browser.browserAction.setIcon({ path: `icons/toolbar_${isRunning ? 'on' : 'off' }.png` });
     for (const popup of browser.extension.getViews({ type: 'popup' })) {
-      popup.renderState(browser.profilerState);
+      popup.renderState(window.profilerState);
     }
   });
 
@@ -117,5 +136,7 @@ async function restartProfiler() {
       reportUrl: 'https://perf-html.io/from-addon/',
     });
   }
+
+  adjustState({ isRunning: false });
 })();
 

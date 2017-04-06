@@ -15,11 +15,11 @@ const injectFunction = () => {
       document.addEventListener("DOMContentLoaded", connectToPage);
     } else if (event.data.type === 'ProfilerGetSymbolTableReply') {
       const { debugName, breakpadId, status, result, error } = event.data;
-
-      const { resolve, reject } = symbolReplyPromiseMap.get([debugName, breakpadId].joi(':'));
+      const { resolve, reject } = symbolReplyPromiseMap.get([debugName, breakpadId].join(':'));
 
       if (status === 'success') {
-        resolve(result);
+        const [ addresses, index, buffer ] = result;
+        resolve([new Uint32Array([addresses]), new Uint32Array(index), new Uint8Array(buffer)]);
       } else {
         reject(error);
       }
@@ -47,18 +47,18 @@ injectScript.innerHTML = `(${injectFunction.toString()})();`;
 
 document.documentElement.appendChild(injectScript);
 
+const port = browser.runtime.connect({ name: 'ProfilerPage' });
+
 window.addEventListener('message', event => {
   if (event.source != window) {
     return;
   }
 
   const validMessages = ['ProfilerGetSymbolTable'];
-  if (validMessages.includes(event.type)) {
-    browser.runtime.sendMessage(event.data);
+  if (validMessages.includes(event.data.type)) {
+    port.postMessage(event.data);
   }
 });
-
-const port = browser.runtime.connect({ name: 'ProfilerPage' });
 
 port.onMessage.addListener((message, sender, sendResponse) => {
   const validMessages = ['ProfilerConnectToPage', 'ProfilerGetSymbolTableReply'];

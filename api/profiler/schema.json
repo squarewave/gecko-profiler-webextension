@@ -77,11 +77,27 @@
         ]
       },
       {
-        "name": "getSharedLibraryInformation",
+        "name": "primeSymbolStore",
         "type": "function",
         "description": "",
         "async": "callback",
         "parameters": []
+      },
+      {
+        "name": "getSymbols",
+        "type": "function",
+        "description": "",
+        "async": "callback",
+        "parameters": [
+          {
+            "type": "string",
+            "name": "debugName"
+          },
+          {
+            "type": "string",
+            "name": "breakpadId"
+          }
+        ]
       }
     ],
     "events": [
