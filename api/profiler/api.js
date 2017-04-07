@@ -1,9 +1,9 @@
 const { utils: Cu, classes: Cc, interfaces: Ci } = Components;
 
-Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/ExtensionUtils.jsm");
+Cu.import("resource://gre/modules/Services.jsm");
+Cu.import("resource://gre/modules/Subprocess.jsm");
 Cu.import("resource://gre/modules/Timer.jsm");
-Cu.import("resource://extension-profiler-api/Worker.jsm");
 const { OS } = Cu.import("resource://gre/modules/osfile.jsm", {});
 const { gDevTools } = Cu.import("resource://devtools/client/framework/gDevTools.jsm", {});
 const { loader } = Cu.import("resource://devtools/shared/Loader.jsm", {});
@@ -18,8 +18,14 @@ const {
   SingletonEventManager
 } = ExtensionUtils;
 
+function extensionURL(relativePath) {
+  return `resource://extension-profiler-api/${relativePath}`;
+}
+
+Cu.import(extensionURL("Worker.jsm"));
+
 function parseSym(data) {
-  const worker =  new Worker('resource://extension-profiler-api/parse-syms-worker.js');
+  const worker =  new Worker(extensionURL('parse-syms-worker.js'));
   worker.postMessage(data);
   return new Promise((resolve, reject) => {
     worker.onmessage = (e) => {
@@ -29,6 +35,35 @@ function parseSym(data) {
         resolve(e.data.result);
       }
     }
+  });
+}
+
+function dumpSyms(path, platform, arch) {
+  let filename = path.substr(path.lastIndexOf("/") + 1);
+  if (platform != 'darwin' && platform != 'linux')
+    platform = filename.match(/\.so(\.[0-9]+)?$/) ? 'linux' : 'darwin';
+  return new Promise(function (resolve, reject) {
+    let worker = new Worker(extensionURL("dump-syms-worker.js"));
+    worker.onmessage = function (e) {
+      if (e.data && ('type' in e.data)) {
+        switch (e.data.type) {
+          case "error":
+            reject(e.data.error);
+            break;
+          case "success":
+            resolve(e.data.result);
+            break;
+          case "printErr":
+            console.log(e.data.text);
+            break;
+        }
+      }
+    }
+    let scriptURL = extensionURL(`dump_syms-${platform}.js`);
+    worker.postMessage({
+      type: "request",
+      filename, path, platform, arch, scriptURL
+    });
   });
 }
 
@@ -49,6 +84,136 @@ function profiler() {
     profiler.cachedProfiler = Cc["@mozilla.org/tools/profiler;1"].getService(Ci.nsIProfiler);
   }
   return profiler.cachedProfiler;
+}
+
+class NMParser {
+  constructor() {
+    this._addrToSymMap = new Map();
+    this._currentLine = '';
+    this._approximateSymLength = 0;
+  }
+
+  consume(data) {
+    const currentLineLength = this._currentLine.length;
+    let buffer = this._currentLine + data;
+    let nextLineBreak = buffer.indexOf('\n', currentLineLength);
+    while (nextLineBreak !== -1) {
+      this._processLine(buffer.substr(0, nextLineBreak));
+      buffer = buffer.substr(nextLineBreak + 1);
+      nextLineBreak = buffer.indexOf('\n');
+    }
+    this._currentLine = buffer;
+  }
+
+  finish() {
+    this._processLine(this._currentLine);
+    return {
+      syms: this._addrToSymMap,
+      approximateSymLength: this._approximateSymLength,
+    };
+  }
+
+  _processLine(line) {
+    // Example lines:
+    // 00000000028c9888 t GrFragmentProcessor::MulOutputByInputUnpremulColor(sk_sp<GrFragmentProcessor>)::PremulFragmentProcessor::onCreateGLSLInstance() const::GLFP::~GLFP()
+    // 00000000028c9874 t GrFragmentProcessor::MulOutputByInputUnpremulColor(sk_sp<GrFragmentProcessor>)::PremulFragmentProcessor::onCreateGLSLInstance() const::GLFP::~GLFP()
+    // 00000000028c9874 t GrFragmentProcessor::MulOutputByInputUnpremulColor(sk_sp<GrFragmentProcessor>)::PremulFragmentProcessor::onCreateGLSLInstance() const::GLFP::~GLFP()
+    // 0000000003a33730 r mozilla::OggDemuxer::~OggDemuxer()::{lambda()#1}::operator()() const::__func__
+    // 0000000003a33930 r mozilla::VPXDecoder::Drain()::{lambda()#1}::operator()() const::__func__
+    //
+    // Some lines have the form
+    // <address> ' ' <letter> ' ' <symbol>
+    // and some have the form
+    // <address> ' ' <symbol>
+    // The letter has a meaning, but we ignore it.
+
+    const firstSpace = line.indexOf(' ');
+    if (firstSpace === -1) {
+      return;
+    }
+
+    const addressString = line.substr(0, firstSpace);
+    const symbolStart = line.charAt(firstSpace + 2) === ' ' ? firstSpace + 3 : firstSpace + 1;
+    const symbolString = line.substr(symbolStart).trim();
+    const address = parseInt(addressString, 16);
+    this._addrToSymMap.set(address, symbolString);
+    this._approximateSymLength += symbolString.length;
+  }
+}
+
+// The following two functions below are copied from parse-sym-worker.js.
+// I don't know how to easily share code between SDK-style modules and workers.
+function convertStringArrayToUint8BufferWithIndex(array, approximateLength) {
+  const index = new Uint32Array(array.length + 1);
+
+  const textEncoder = new TextEncoder();
+  let buffer = new Uint8Array(approximateLength);
+  let pos = 0;
+
+  for (let i = 0; i < array.length; i++) {
+    const encodedString = textEncoder.encode(array[i]);
+    while (pos + encodedString.length > buffer.length) {
+      let newBuffer = new Uint8Array(buffer.length << 1);
+      newBuffer.set(buffer);
+      buffer = newBuffer;
+    }
+    buffer.set(encodedString, pos);
+    index[i] = pos;
+    pos += encodedString.length;
+  }
+  index[array.length] = pos;
+
+  return { index, buffer };
+}
+
+function convertSymsMapToExpectedSymFormat(syms, approximateSymLength) {
+  const addresses = Array.from(syms.keys());
+  addresses.sort((a, b) => a - b);
+
+  const symsArray = addresses.map(addr => syms.get(addr));
+  const { index, buffer } =
+    convertStringArrayToUint8BufferWithIndex(symsArray, approximateSymLength);
+
+  return [new Uint32Array(addresses), index, buffer];
+}
+
+function feedProcessStdoutInto(proc, consumer) {
+  return new Promise((resolve, reject) => {
+    proc.stdout.on('data', data => consumer.consume(data));
+    proc.on('close', exitCode => {
+      if (exitCode == 0) {
+        resolve(consumer);
+      } else {
+        reject(`exit code ${exitCode}`);
+      }
+    });
+    proc.on('error', reject);
+  });
+}
+
+async function readAllData(pipe, processData) {
+  let data;
+  while (data = await pipe.readString()) {
+    processData(data);
+  }
+}
+
+async function spawnProcess(name, cmdArgs, processData) {
+  const opts = {};
+  opts.command = await Subprocess.pathSearch(name);
+  opts.arguments = cmdArgs;
+  opts.environment = {};
+  const proc = await Subprocess.call(opts);
+
+  await readAllData(proc.stdout, processData);
+}
+
+async function getSymbolsFromNM(path) {
+  const parser = new NMParser();
+  await spawnProcess('nm', ['--demangle', path], data => parser.consume(data));
+  await spawnProcess('nm', ['-D', '--demangle', path], data => parser.consume(data));
+  const { syms, approximateSymLength } = parser.finish();
+  return convertSymsMapToExpectedSymFormat(syms, approximateSymLength);
 }
 
 async function startProfiler(entries, interval, features, threads) {
@@ -225,11 +390,11 @@ async function primeSymbolStore(libs) {
 }
 
 async function getSymbols(debugName, breakpadId) {
-  const cachedInfo = symbolCache.get(debugName, breakpadId);
+  const cachedInfo = symbolCache.get(urlForSymFile(debugName, breakpadId));
   let path, platform, arch;
   if (cachedInfo) {
     path = cachedInfo.path;
-    platform = cachedInfo.platform;
+    platform = cachedInfo.platform.toLowerCase();
     arch = cachedInfo.arch;
   }
 
@@ -264,39 +429,28 @@ async function getSymbols(debugName, breakpadId) {
   }
 
   // (2) Try to obtain a symbol dump from the Mozilla symbol server.
-  const symbolDump = await getSymbolDumpFromSymbolServer(debugName, breakpadId);
+  let symbolDump = await getSymbolDumpFromSymbolServer(debugName, breakpadId);
 
   if (symbolDump) {
     return await parseSym(symbolDump);
   }
 
-  // if (!haveAbsolutePath) {
+  if (!haveAbsolutePath) {
     throw new Error(`Cannot dump symbols from library ${debugName} ${breakpadId} because the absolute path to the binary is not known.`);
-  // }
+  }
 
-  // TODO
-  // try {
-  //   // (3) Use `nm` to obtain symbols.
-  //   if (platform !== 'linux') {
-  //     throw new Error('Can only use `nm` on Linux.');
-  //   }
-  //   // `getSymbolsFromNM` has the parsing step built in; it doesn't go
-  //   // through the intermediary .sym format.
-  //   return await logPromise(
-  //     `dumping symbols for library ${debugName} ${breakpadId} located at ${path} using nm`,
-  //     getSymbolsFromNM(path)
-  //   );
-  // } catch (error) {
-  //   // (4) Run dump_syms to obtain a symbol dump.
-  //   const symbolDump = await logPromise(
-  //     `dumping symbols for library ${debugName} ${breakpadId} located at ${path} using dump_syms`,
-  //     getSymbolDumpByDumpingLocalFile(path, platform, arch)
-  //   );
-  //   return await logPromise(
-  //     `parsing symbol file for library ${debugName} ${breakpadId} obtained from dump_syms`,
-  //     parseSym(symbolDump)
-  //   );
-  // }
+  // (3) Use `nm` to obtain symbols.
+  if (platform === 'linux') {
+    try {
+      return await getSymbolsFromNM(path);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  // (4) Run dump_syms to obtain a symbol dump.
+  symbolDump = await dumpSyms(path, platform, arch);
+  return await parseSym(symbolDump);
 }
 
 function listClientTabs(client) {
