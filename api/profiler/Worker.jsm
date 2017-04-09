@@ -1,1 +1,1 @@
-let EXPORTED_SYMBOLS = ["Worker"];
+let EXPORTED_SYMBOLS = ['Worker', 'ChromeWorker'];

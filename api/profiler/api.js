@@ -43,7 +43,7 @@ function dumpSyms(path, platform, arch) {
   if (platform != 'darwin' && platform != 'linux')
     platform = filename.match(/\.so(\.[0-9]+)?$/) ? 'linux' : 'darwin';
   return new Promise(function (resolve, reject) {
-    let worker = new Worker(extensionURL("dump-syms-worker.js"));
+    let worker = new ChromeWorker(extensionURL("dump-syms-worker.js"));
     worker.onmessage = function (e) {
       if (e.data && ('type' in e.data)) {
         switch (e.data.type) {
