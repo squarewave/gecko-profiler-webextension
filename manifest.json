@@ -25,6 +25,20 @@
       "strict_min_version": "52.0"
     }
   },
+  "commands": {
+    "ToggleProfiler": {
+      "suggested_key": {
+        "default": "Alt+1"
+      },
+      "description": "Toggles the profiler on/off."
+    },
+    "CaptureProfile": {
+      "suggested_key": {
+        "default": "Alt+2"
+      },
+      "description": "Captures a profile if the profiler is on."
+    }
+  },
   "permissions": [
     "experiments.profiler",
     "storage",

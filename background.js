@@ -3,21 +3,6 @@ function adjustState(newState) {
   browser.storage.local.set({profilerState: window.profilerState});
 }
 
-async function startProfiler(panelID = null) {
-  const settings = window.profilerState;
-  const threads = settings.threads.split(",");
-  const enabledFeatures = Object.keys(settings.features).filter(f => settings.features[f]);
-  enabledFeatures.push("leaf");
-  if (threads.length > 0) {
-    enabledFeatures.push("threads");
-  }
-  await browser.profiler.start(settings.buffersize,
-                               settings.interval,
-                               enabledFeatures,
-                               threads,
-                               panelID);
-}
-
 function makeProfileAvailableToTab(profile, port) {
   port.postMessage({ type: 'ProfilerConnectToPage', payload: profile });
 
@@ -101,6 +86,21 @@ browser.runtime.onConnect.addListener(port => {
   }
 });
 
+async function startProfiler(panelID = null) {
+  const settings = window.profilerState;
+  const threads = settings.threads.split(",");
+  const enabledFeatures = Object.keys(settings.features).filter(f => settings.features[f]);
+  enabledFeatures.push("leaf");
+  if (threads.length > 0) {
+    enabledFeatures.push("threads");
+  }
+  await browser.profiler.start(settings.buffersize,
+                               settings.interval,
+                               enabledFeatures,
+                               threads,
+                               panelID);
+}
+
 async function stopProfiler(panelID = null) {
   await browser.profiler.stop(panelID);
 }
@@ -129,7 +129,6 @@ async function restartProfiler(panelID = null) {
   });
 
   browser.profiler.onDevtoolsPanelMessage.addListener(async (message, panelID, sendResponse) => {
-    console.log(message);
     switch (message.type) {
       case 'PanelConnected':
         const state = Object.assign({}, window.profilerState);
@@ -160,6 +159,20 @@ async function restartProfiler(panelID = null) {
     }
   });
 
+  browser.commands.onCommand.addListener(command => {
+    if (command === 'ToggleProfiler') {
+      if (window.profilerState.isRunning) {
+        stopProfiler();
+      } else {
+        startProfiler();
+      }
+    } else if (command === 'CaptureProfile') {
+      if (window.profilerState.isRunning) {
+        captureProfile();
+      }
+    }
+  });
+
   if (!window.profilerState) {
     window.profilerState = {};
     adjustState({
@@ -177,6 +190,10 @@ async function restartProfiler(panelID = null) {
     });
   }
 
-  adjustState({ isRunning: false });
+  if (window.profilerState.isRunning) {
+    startProfiler();
+  } else {
+    stopProfiler();
+  }
 })();
 
