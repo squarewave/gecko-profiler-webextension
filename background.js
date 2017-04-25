@@ -9,9 +9,8 @@ function makeProfileAvailableToTab(profile, port) {
   port.onMessage.addListener(async message => {
     if (message.type === 'ProfilerGetSymbolTable') {
       const { debugName, breakpadId } = message;
-      console.log(`requested ${debugName} ${breakpadId}`)
       try {
-        const [ addresses, index, buffer ] = await browser.profiler.getSymbols(debugName, breakpadId);
+        const [ addresses, index, buffer ] = await browser.geckoProfiler.getSymbols(debugName, breakpadId);
 
         port.postMessage({
           type: 'ProfilerGetSymbolTableReply',
@@ -52,20 +51,18 @@ async function listenOnceForConnect(name) {
   return await window.connectDeferred[name].promise;
 }
 
-async function captureProfile(panelID = null) {
+async function captureProfile() {
   // Pause profiler before we collect the profile, so that we don't capture
   // more samples while the parent process waits for subprocess profiles.
-  await browser.profiler.pause(panelID).catch(() => {});
+  await browser.geckoProfiler.pause().catch(() => {});
 
-  const profilePromise = browser.profiler.getProfile(panelID).catch(e => (console.error(e), {}));
+  const profilePromise = browser.geckoProfiler.getProfile().catch(e => (console.error(e), {}));
   const tabOpenPromise = createAndWaitForTab(window.profilerState.reportUrl);
-  const symbolStorePrimingPromise = browser.profiler.primeSymbolStore(panelID);
 
   try {
-    const [profile, { port }] = await Promise.all([profilePromise, tabOpenPromise, symbolStorePrimingPromise]);
+    const [profile, { port }] = await Promise.all([profilePromise, tabOpenPromise]);
     makeProfileAvailableToTab(profile, port);
   } catch (e) {
-    console.log("error getting profile:");
     console.error(e);
     const { tab } = await tabOpenPromise;
     // TODO data URL doesn't seem to be working. Permissions issue?
@@ -73,20 +70,13 @@ async function captureProfile(panelID = null) {
   }
 
   try {
-    await browser.profiler.resume();
+    await browser.geckoProfiler.resume();
   } catch (e) {
     console.error(e);
   }
 }
 
-window.connectDeferred = {};
-browser.runtime.onConnect.addListener(port => {
-  if (window.connectDeferred[port.name]) {
-    window.connectDeferred[port.name].resolve(port);
-  }
-});
-
-async function startProfiler(panelID = null) {
+async function startProfiler() {
   const settings = window.profilerState;
   const threads = settings.threads.split(",");
   const enabledFeatures = Object.keys(settings.features).filter(f => settings.features[f]);
@@ -94,84 +84,26 @@ async function startProfiler(panelID = null) {
   if (threads.length > 0) {
     enabledFeatures.push("threads");
   }
-  await browser.profiler.start(settings.buffersize,
-                               settings.interval,
-                               enabledFeatures,
-                               threads,
-                               panelID);
+  const options = {
+    bufferSize: settings.buffersize,
+    interval: settings.interval,
+    features: enabledFeatures,
+    threads,
+  };
+  await browser.geckoProfiler.start(options);
 }
 
-async function stopProfiler(panelID = null) {
-  await browser.profiler.stop(panelID);
+async function stopProfiler() {
+  await browser.geckoProfiler.stop();
 }
 
-async function restartProfiler(panelID = null) {
-  await stopProfiler(panelID);
-  await startProfiler(panelID);
+async function restartProfiler() {
+  await stopProfiler();
+  await startProfiler();
 }
 
 (async () => {
   window.profilerState = (await browser.storage.local.get('profilerState')).profilerState;
-
-  browser.profiler.onRunningChanged.addListener(isRunning => {
-    adjustState({ isRunning });
-    browser.browserAction.setIcon({ path: `icons/toolbar_${isRunning ? 'on' : 'off' }.png` });
-    for (const popup of browser.extension.getViews({ type: 'popup' })) {
-      popup.renderState(window.profilerState);
-    }
-  });
-
-  browser.profiler.registerDevtoolsPanel("gecko-profiler-addon", {
-    icon: "icons/toolbar_off.png",
-    url: "panel.html",
-    label: "Gecko Profiler",
-    tooltip: "This panel is provided by the Gecko Profiler add-on."
-  });
-
-  browser.profiler.onDevtoolsPanelMessage.addListener(async (message, panelID, sendResponse) => {
-    switch (message.type) {
-      case 'PanelConnected':
-        const state = Object.assign({}, window.profilerState);
-        state.isRunning = await browser.profiler.isRunning(panelID);
-        browser.profiler.sendDevtoolsPanelMessage(panelID, { type: 'ProfilerStateUpdated', state });
-        break;
-      case 'ProfilerControlStartProfiler':
-        startProfiler(panelID);
-        browser.profiler.sendDevtoolsPanelMessage(panelID, {
-          type: 'ProfilerStateUpdated',
-          state: { isRunning: true}
-        });
-        break;
-      case 'ProfilerControlStopProfiler':
-        stopProfiler(panelID);
-        browser.profiler.sendDevtoolsPanelMessage(panelID, {
-          type: 'ProfilerStateUpdated',
-          state: { isRunning: false}
-        });
-        break;
-      case 'ProfilerControlCaptureProfile':
-        captureProfile(panelID);
-        break;
-      case 'ProfilerControlChangeSetting':
-        break;
-      case 'ProfilerControlChangeFeature':
-        break;
-    }
-  });
-
-  browser.commands.onCommand.addListener(command => {
-    if (command === 'ToggleProfiler') {
-      if (window.profilerState.isRunning) {
-        stopProfiler();
-      } else {
-        startProfiler();
-      }
-    } else if (command === 'CaptureProfile') {
-      if (window.profilerState.isRunning) {
-        captureProfile();
-      }
-    }
-  });
 
   if (!window.profilerState) {
     window.profilerState = {};
@@ -191,9 +123,38 @@ async function restartProfiler(panelID = null) {
   }
 
   if (window.profilerState.isRunning) {
-    startProfiler();
+    await startProfiler();
   } else {
-    stopProfiler();
+    await stopProfiler();
   }
+
+  browser.geckoProfiler.onRunning.addListener(isRunning => {
+    adjustState({ isRunning });
+    browser.browserAction.setIcon({ path: `icons/toolbar_${isRunning ? 'on' : 'off' }.png` });
+    for (const popup of browser.extension.getViews({ type: 'popup' })) {
+      popup.renderState(window.profilerState);
+    }
+  });
+
+  browser.commands.onCommand.addListener(command => {
+    if (command === 'ToggleProfiler') {
+      if (window.profilerState.isRunning) {
+        stopProfiler();
+      } else {
+        startProfiler();
+      }
+    } else if (command === 'CaptureProfile') {
+      if (window.profilerState.isRunning) {
+        captureProfile();
+      }
+    }
+  });
+
+  window.connectDeferred = {};
+  browser.runtime.onConnect.addListener(port => {
+    if (window.connectDeferred[port.name]) {
+      window.connectDeferred[port.name].resolve(port);
+    }
+  });
 })();
 

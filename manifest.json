@@ -40,7 +40,7 @@
     }
   },
   "permissions": [
-    "experiments.profiler",
+    "geckoProfiler",
     "storage",
     "https://perf-html.io/*"
   ]
