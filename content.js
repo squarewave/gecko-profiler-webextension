@@ -18,8 +18,9 @@ const injectFunction = () => {
       const { resolve, reject } = symbolReplyPromiseMap.get([debugName, breakpadId].join(':'));
 
       if (status === 'success') {
+        console.log('success ' + debugName);
         const [ addresses, index, buffer ] = result;
-        resolve([new Uint32Array([addresses]), new Uint32Array(index), new Uint8Array(buffer)]);
+        resolve([addresses, index, buffer]);
       } else {
         reject(error);
       }
@@ -62,7 +63,13 @@ window.addEventListener('message', event => {
 
 port.onMessage.addListener((message, sender, sendResponse) => {
   const validMessages = ['ProfilerConnectToPage', 'ProfilerGetSymbolTableReply'];
-  if (validMessages.includes(message.type)) {
+  if (message.type === 'ProfilerGetSymbolTableReply') {
+    if (message.status === 'success') {
+      window.postMessage(message, '*', message.result.map(r => r.buffer));
+    } else {
+      window.postMessage(message, '*');
+    }
+  } else if (message.type === 'ProfilerConnectToPage') {
     window.postMessage(message, '*');
   }
 });
